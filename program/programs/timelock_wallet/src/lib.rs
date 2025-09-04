@@ -1,18 +1,16 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::{
-    self, CloseAccount, Mint, Token, TokenAccount, Transfer as TokenTransfer,
-};
+use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as TokenTransfer};
 
-// Replace with your deployed program id
-declare_id!("BULdJ1cgSeVEtfzXaXm2DM4vxT8yJg8sBQj9o4HXs98j");
+// Use your deployed program id
+declare_id!("84reSFSeFi5wL2TJZQHjp4NkcPx8kWkLc7k9XeG3wrpB");
 
 #[program]
 pub mod timelock_wallet {
     use super::*;
 
-    /// Lock native SOL until `unlock_ts`. Funds are held by the PDA (this account).
+    /// Lock native SOL until `unlock_ts`. Funds are held by the program-owned `timelock` account.
     pub fn initialize_lock(
         ctx: Context<InitializeLock>,
         amount: u64,
@@ -29,9 +27,9 @@ pub mod timelock_wallet {
         tl.mint = Pubkey::default(); // default() ⇒ SOL lock
         tl.amount = amount;
         tl.unlock_ts = unlock_ts;
-        tl.bump = *ctx.bumps.get("timelock").unwrap();
+        tl.bump = ctx.bumps.timelock;
 
-        // Transfer SOL from initializer → timelock PDA
+        // Transfer SOL from initializer → timelock account (program-owned data account)
         transfer(
             CpiContext::new(
                 ctx.accounts.system_program.to_account_info(),
@@ -63,9 +61,9 @@ pub mod timelock_wallet {
         tl.mint = ctx.accounts.mint.key();
         tl.amount = amount;
         tl.unlock_ts = unlock_ts;
-        tl.bump = *ctx.bumps.get("timelock").unwrap();
+        tl.bump = ctx.bumps.timelock;
 
-        // Transfer tokens from user ATA → vault ATA (authority: PDA)
+        // Transfer tokens from user ATA → vault ATA (authority: timelock PDA)
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -82,6 +80,7 @@ pub mod timelock_wallet {
     }
 
     /// Withdraw locked SOL to the caller (must be owner or recipient) after unlock.
+    /// We manually move lamports because `close = ...` cannot close a program-owned data account via SystemProgram.
     pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
         let tl = &mut ctx.accounts.timelock;
         require!(tl.mint == Pubkey::default(), TimelockError::WrongMint);
@@ -100,33 +99,24 @@ pub mod timelock_wallet {
             TimelockError::OwnerMismatch
         );
 
-        let seeds: &[&[u8]] = &[
-            b"timelock",
-            tl.owner.as_ref(),
-            tl.recipient.as_ref(),
-            &tl.unlock_ts.to_le_bytes(),
-            &[tl.bump],
-        ];
-
-        // Transfer exactly the locked amount; rent is returned on close
         let amount = tl.amount;
-        transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.system_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.timelock.to_account_info(),
-                    to: ctx.accounts.caller.to_account_info(),
-                },
-                &[seeds],
-            ),
-            amount,
-        )?;
+        require!(amount > 0, TimelockError::InvalidAmount);
 
+        // Mark paid before borrowing to_account_info()
         tl.amount = 0;
+
+        let from_ai = &mut ctx.accounts.timelock.to_account_info();
+        let to_ai = &mut ctx.accounts.caller.to_account_info();
+
+        // Move the locked lamports out of the program-owned account by direct lamport mutation
+        **from_ai.try_borrow_mut_lamports()? -= amount;
+        **to_ai.try_borrow_mut_lamports()? += amount;
+
         Ok(())
     }
 
     /// Withdraw locked SPL tokens to the caller (must be owner or recipient) after unlock.
+    /// We close only the SPL vault (via token::close_account). The program account remains allocated.
     pub fn withdraw_spl(ctx: Context<WithdrawSpl>) -> Result<()> {
         let tl = &ctx.accounts.timelock;
         require!(tl.mint == ctx.accounts.mint.key(), TimelockError::WrongMint);
@@ -167,7 +157,7 @@ pub mod timelock_wallet {
             tl.amount,
         )?;
 
-        // Close the vault token account; rent goes back to owner
+        // Close the vault token account; rent goes back to owner_refund
         token::close_account(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -269,8 +259,8 @@ pub struct Withdraw<'info> {
             timelock.recipient.as_ref(),
             &timelock.unlock_ts.to_le_bytes()
         ],
-        bump = timelock.bump,
-        close = owner_refund
+        bump = timelock.bump
+        // NOTE: no `close = ...` here; we manually move lamports above.
     )]
     pub timelock: Account<'info, TimeLock>,
 
@@ -294,8 +284,8 @@ pub struct WithdrawSpl<'info> {
             timelock.recipient.as_ref(),
             &timelock.unlock_ts.to_le_bytes()
         ],
-        bump = timelock.bump,
-        close = owner_refund
+        bump = timelock.bump
+        // NOTE: no `close = ...` for the program account
     )]
     pub timelock: Account<'info, TimeLock>,
 
@@ -313,7 +303,7 @@ pub struct WithdrawSpl<'info> {
     pub vault: Account<'info, TokenAccount>,
 
     #[account(
-        init,
+        init_if_needed,
         payer = caller,
         associated_token::mint = mint,
         associated_token::authority = caller
@@ -326,6 +316,7 @@ pub struct WithdrawSpl<'info> {
 }
 
 #[account]
+#[derive(Default)]
 pub struct TimeLock {
     pub owner: Pubkey,
     pub recipient: Pubkey,
@@ -345,19 +336,14 @@ impl TimeLock {
 pub enum TimelockError {
     #[msg("Amount must be > 0")]
     InvalidAmount,
-
     #[msg("Unlock timestamp must be in the future")]
     UnlockInPast,
-
     #[msg("Current time is before unlock time")]
     TooEarly,
-
     #[msg("Caller is not authorized")]
     Unauthorized,
-
     #[msg("Mint mismatch or unsupported for this operation")]
     WrongMint,
-
     #[msg("Owner account provided does not match stored owner")]
     OwnerMismatch,
 }
