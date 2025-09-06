@@ -5,13 +5,8 @@ seeds = false
 skip-lint = false
 
 [programs.devnet]
-timelock_wallet = "84reSFSeFi5wL2TJZQHjp4NkcPx8kWkLc7k9XeG3wrpB"
-
-[registry]
-url = "https://api.apr.dev"
+timelock_wallet = "3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU"
 
 [provider]
-cluster = "Devnet"
-wallet = 'C:\Users\gajer\.config/solana/id.json'
-
-[scripts]   
+cluster = "https://api.devnet.solana.com"
+wallet = "C:/Users/gajer/.config/solana/id.json"

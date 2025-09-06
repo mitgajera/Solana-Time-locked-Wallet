@@ -11,7 +11,7 @@ describe("timelock (SOL)", () => {
   anchor.setProvider(provider);
 
   // Use the deployed program ID
-  const programId = new PublicKey("84reSFSeFi5wL2TJZQHjp4NkcPx8kWkLc7k9XeG3wrpB");
+  const programId = new PublicKey("3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU");
   const program = new anchor.Program<TimelockWallet>(
     require("../target/idl/timelock_wallet.json"),
     programId,
@@ -80,7 +80,7 @@ describe("timelock (SPL Token)", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const programId = new PublicKey("84reSFSeFi5wL2TJZQHjp4NkcPx8kWkLc7k9XeG3wrpB");
+  const programId = new PublicKey("3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU");
   const program = new anchor.Program<TimelockWallet>(
     require("../target/idl/timelock_wallet.json"),
     programId,

@@ -4,7 +4,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as TokenTransfer};
 
 // Use your deployed program id
-declare_id!("84reSFSeFi5wL2TJZQHjp4NkcPx8kWkLc7k9XeG3wrpB");
+declare_id!("3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU");
 
 #[program]
 pub mod timelock_wallet {
