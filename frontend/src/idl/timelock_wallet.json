@@ -1,0 +1,264 @@
+{
+  "version": "0.1.0",
+  "name": "timelock_wallet",
+  "instructions": [
+    {
+      "name": "initializeLock",
+      "accounts": [
+        {
+          "name": "initializer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "recipient",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "Any pubkey can be a recipient"
+          ]
+        },
+        {
+          "name": "timelock",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "unlockTs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "initializeLockSpl",
+      "docs": [
+        "Lock SPL tokens (e.g., USDC) until `unlock_ts`. Tokens are held in an ATA owned by the PDA."
+      ],
+      "accounts": [
+        {
+          "name": "initializer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "recipient",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "mint",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "timelock",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "userAta",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "associatedTokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "unlockTs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "docs": [
+        "Withdraw locked SOL to the caller (must be owner or recipient) after unlock.",
+        "We manually move lamports because `close = ...` cannot close a program-owned data account via SystemProgram."
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "timelock",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "ownerRefund",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdrawSpl",
+      "docs": [
+        "Withdraw locked SPL tokens to the caller (must be owner or recipient) after unlock.",
+        "We close only the SPL vault (via token::close_account). The program account remains allocated."
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "timelock",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "ownerRefund",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "mint",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "callerAta",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "associatedTokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "timeLock",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "publicKey"
+          },
+          {
+            "name": "recipient",
+            "type": "publicKey"
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "`mint = Pubkey::default()` ⇒ SOL; otherwise SPL mint"
+            ],
+            "type": "publicKey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "unlockTs",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidAmount",
+      "msg": "Amount must be > 0"
+    },
+    {
+      "code": 6001,
+      "name": "UnlockInPast",
+      "msg": "Unlock timestamp must be in the future"
+    },
+    {
+      "code": 6002,
+      "name": "TooEarly",
+      "msg": "Current time is before unlock time"
+    },
+    {
+      "code": 6003,
+      "name": "Unauthorized",
+      "msg": "Caller is not authorized"
+    },
+    {
+      "code": 6004,
+      "name": "WrongMint",
+      "msg": "Mint mismatch or unsupported for this operation"
+    },
+    {
+      "code": 6005,
+      "name": "OwnerMismatch",
+      "msg": "Owner account provided does not match stored owner"
+    }
+  ],
+  "metadata": {
+    "address": "3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU"
+  }
+}
