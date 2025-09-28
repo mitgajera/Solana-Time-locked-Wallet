@@ -5,8 +5,8 @@ seeds = false
 skip-lint = false
 
 [programs.devnet]
-timelock_wallet = "3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU"
+timelock_wallet = "2TShpwBZndqh55rQZovy7FrFVGdB2WKjG9PL4byn6WdY"
 
 [provider]
 cluster = "https://api.devnet.solana.com"
-wallet = "C:/Users/gajer/.config/solana/id.json"
+wallet = "C:\\Users\\gajer\\.config\\solana\\id.json"

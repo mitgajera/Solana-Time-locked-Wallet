@@ -1,349 +1,445 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program::{transfer, Transfer};
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as TokenTransfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-// Use your deployed program id
-declare_id!("3Pe4uajDJG6aMN34GMmxTzhSUHEiUqUvV3tTSgjuJkMU");
+declare_id!("2TShpwBZndqh55rQZovy7FrFVGdB2WKjG9PL4byn6WdY");
 
 #[program]
 pub mod timelock_wallet {
     use super::*;
 
-    /// Lock native SOL until `unlock_ts`. Funds are held by the program-owned `timelock` account.
+    /// Initialize a SOL timelock
     pub fn initialize_lock(
         ctx: Context<InitializeLock>,
         amount: u64,
-        unlock_ts: i64,
+        unlock_timestamp: i64,
+        recipient: Option<Pubkey>,
     ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        // Validation
+        require!(
+            unlock_timestamp > clock.unix_timestamp,
+            TimelockError::InvalidUnlockTime
+        );
         require!(amount > 0, TimelockError::InvalidAmount);
+        require!(amount >= 1_000_000, TimelockError::MinimumAmount);
 
-        let now = Clock::get()?.unix_timestamp;
-        require!(unlock_ts > now, TimelockError::UnlockInPast);
+        // Store values before mutable borrow
+        let creator_key = ctx.accounts.creator.key();
+        let recipient_key = recipient.unwrap_or(creator_key);
+        let timelock_key = ctx.accounts.timelock_account.key();
 
-        let tl = &mut ctx.accounts.timelock;
-        tl.owner = ctx.accounts.initializer.key();
-        tl.recipient = ctx.accounts.recipient.key();
-        tl.mint = Pubkey::default(); // default() ⇒ SOL lock
-        tl.amount = amount;
-        tl.unlock_ts = unlock_ts;
-        tl.bump = ctx.bumps.timelock;
+        // Initialize account data
+        let timelock_account = &mut ctx.accounts.timelock_account;
+        timelock_account.creator = creator_key;
+        timelock_account.recipient = recipient_key;
+        timelock_account.amount = amount;
+        timelock_account.unlock_timestamp = unlock_timestamp;
+        timelock_account.is_withdrawn = false;
+        timelock_account.bump = ctx.bumps.timelock_account;
+        timelock_account.token_mint = None;
+        timelock_account.created_at = clock.unix_timestamp;
 
-        // Transfer SOL from initializer → timelock account (program-owned data account)
-        transfer(
-            CpiContext::new(
-                ctx.accounts.system_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.initializer.to_account_info(),
-                    to: ctx.accounts.timelock.to_account_info(),
-                },
-            ),
+        // Transfer SOL to PDA
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            anchor_lang::system_program::Transfer {
+                from: ctx.accounts.creator.to_account_info(),
+                to: ctx.accounts.timelock_account.to_account_info(),
+            },
+        );
+        anchor_lang::system_program::transfer(cpi_context, amount)?;
+
+        emit!(TimelockCreated {
+            timelock_account: timelock_key,
+            creator: creator_key,
+            recipient: recipient_key,
             amount,
-        )?;
+            unlock_timestamp,
+            token_mint: None,
+        });
 
+        msg!(
+            "SOL timelock created: {} lamports, unlocks at {}",
+            amount,
+            unlock_timestamp
+        );
         Ok(())
     }
 
-    /// Lock SPL tokens (e.g., USDC) until `unlock_ts`. Tokens are held in an ATA owned by the PDA.
-    pub fn initialize_lock_spl(
-        ctx: Context<InitializeLockSpl>,
+    /// Initialize a token timelock (USDC, etc.)
+    pub fn initialize_token_lock(
+        ctx: Context<InitializeTokenLock>,
         amount: u64,
-        unlock_ts: i64,
+        unlock_timestamp: i64,
+        recipient: Option<Pubkey>,
     ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        // Validation
+        require!(
+            unlock_timestamp > clock.unix_timestamp,
+            TimelockError::InvalidUnlockTime
+        );
         require!(amount > 0, TimelockError::InvalidAmount);
 
-        let now = Clock::get()?.unix_timestamp;
-        require!(unlock_ts > now, TimelockError::UnlockInPast);
+        // Store values before mutable borrow
+        let creator_key = ctx.accounts.creator.key();
+        let recipient_key = recipient.unwrap_or(creator_key);
+        let timelock_key = ctx.accounts.timelock_account.key();
+        let token_mint_key = ctx.accounts.token_mint.key();
 
-        let tl = &mut ctx.accounts.timelock;
-        tl.owner = ctx.accounts.initializer.key();
-        tl.recipient = ctx.accounts.recipient.key();
-        tl.mint = ctx.accounts.mint.key();
-        tl.amount = amount;
-        tl.unlock_ts = unlock_ts;
-        tl.bump = ctx.bumps.timelock;
+        // Initialize account data
+        let timelock_account = &mut ctx.accounts.timelock_account;
+        timelock_account.creator = creator_key;
+        timelock_account.recipient = recipient_key;
+        timelock_account.amount = amount;
+        timelock_account.unlock_timestamp = unlock_timestamp;
+        timelock_account.is_withdrawn = false;
+        timelock_account.bump = ctx.bumps.timelock_account;
+        timelock_account.token_mint = Some(token_mint_key);
+        timelock_account.created_at = clock.unix_timestamp;
 
-        // Transfer tokens from user ATA → vault ATA (authority: timelock PDA)
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                TokenTransfer {
-                    from: ctx.accounts.user_ata.to_account_info(),
-                    to: ctx.accounts.vault.to_account_info(),
-                    authority: ctx.accounts.initializer.to_account_info(),
-                },
-            ),
+        // Transfer tokens to PDA token account
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.creator_token_account.to_account_info(),
+            to: ctx.accounts.timelock_token_account.to_account_info(),
+            authority: ctx.accounts.creator.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
+        emit!(TimelockCreated {
+            timelock_account: timelock_key,
+            creator: creator_key,
+            recipient: recipient_key,
             amount,
-        )?;
+            unlock_timestamp,
+            token_mint: Some(token_mint_key),
+        });
 
+        msg!(
+            "Token timelock created: {} tokens, unlocks at {}",
+            amount,
+            unlock_timestamp
+        );
         Ok(())
     }
 
-    /// Withdraw locked SOL to the caller (must be owner or recipient) after unlock.
-    /// We manually move lamports because `close = ...` cannot close a program-owned data account via SystemProgram.
+    /// Withdraw SOL from timelock
     pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
-        let tl = &mut ctx.accounts.timelock;
-        require!(tl.mint == Pubkey::default(), TimelockError::WrongMint);
+        let timelock_account = &mut ctx.accounts.timelock_account;
+        let clock = Clock::get()?;
 
-        let now = Clock::get()?.unix_timestamp;
-        require!(now >= tl.unlock_ts, TimelockError::TooEarly);
-
-        let caller = ctx.accounts.caller.key();
+        // Validation
         require!(
-            caller == tl.owner || caller == tl.recipient,
-            TimelockError::Unauthorized
+            !timelock_account.is_withdrawn,
+            TimelockError::AlreadyWithdrawn
+        );
+        require!(
+            clock.unix_timestamp >= timelock_account.unlock_timestamp,
+            TimelockError::StillLocked
+        );
+        require!(
+            ctx.accounts.recipient.key() == timelock_account.recipient,
+            TimelockError::UnauthorizedRecipient
+        );
+        require!(
+            timelock_account.token_mint.is_none(),
+            TimelockError::UseTokenWithdraw
         );
 
-        require!(
-            ctx.accounts.owner_refund.key() == tl.owner,
-            TimelockError::OwnerMismatch
-        );
+        let amount = timelock_account.amount;
+        timelock_account.is_withdrawn = true;
 
-        let amount = tl.amount;
-        require!(amount > 0, TimelockError::InvalidAmount);
+        // Keep minimum rent for account to remain valid
+        let rent_exempt_minimum =
+            Rent::get()?.minimum_balance(timelock_account.to_account_info().data_len());
+        let transfer_amount = amount.saturating_sub(rent_exempt_minimum);
 
-        // Mark paid before borrowing to_account_info()
-        tl.amount = 0;
+        if transfer_amount > 0 {
+            **ctx
+                .accounts
+                .timelock_account
+                .to_account_info()
+                .try_borrow_mut_lamports()? -= transfer_amount;
+            **ctx
+                .accounts
+                .recipient
+                .to_account_info()
+                .try_borrow_mut_lamports()? += transfer_amount;
+        }
 
-        let from_ai = &mut ctx.accounts.timelock.to_account_info();
-        let to_ai = &mut ctx.accounts.caller.to_account_info();
+        emit!(FundsWithdrawn {
+            timelock_account: ctx.accounts.timelock_account.key(),
+            recipient: ctx.accounts.recipient.key(),
+            amount: transfer_amount,
+        });
 
-        // Move the locked lamports out of the program-owned account by direct lamport mutation
-        **from_ai.try_borrow_mut_lamports()? -= amount;
-        **to_ai.try_borrow_mut_lamports()? += amount;
-
+        msg!("Withdrawn {} lamports to recipient", transfer_amount);
         Ok(())
     }
 
-    /// Withdraw locked SPL tokens to the caller (must be owner or recipient) after unlock.
-    /// We close only the SPL vault (via token::close_account). The program account remains allocated.
-    pub fn withdraw_spl(ctx: Context<WithdrawSpl>) -> Result<()> {
-        let tl = &ctx.accounts.timelock;
-        require!(tl.mint == ctx.accounts.mint.key(), TimelockError::WrongMint);
+    /// Withdraw tokens from timelock
+    pub fn withdraw_token(ctx: Context<WithdrawToken>) -> Result<()> {
+        let clock = Clock::get()?;
 
-        let now = Clock::get()?.unix_timestamp;
-        require!(now >= tl.unlock_ts, TimelockError::TooEarly);
+        // Get account info before mutable borrow
+        let timelock_account_info = ctx.accounts.timelock_account.to_account_info();
 
-        let caller = ctx.accounts.caller.key();
+        let timelock_account = &mut ctx.accounts.timelock_account;
+
+        // Validation
         require!(
-            caller == tl.owner || caller == tl.recipient,
-            TimelockError::Unauthorized
+            !timelock_account.is_withdrawn,
+            TimelockError::AlreadyWithdrawn
+        );
+        require!(
+            clock.unix_timestamp >= timelock_account.unlock_timestamp,
+            TimelockError::StillLocked
+        );
+        require!(
+            ctx.accounts.recipient.key() == timelock_account.recipient,
+            TimelockError::UnauthorizedRecipient
+        );
+        require!(
+            timelock_account.token_mint.is_some(),
+            TimelockError::NotTokenAccount
         );
 
-        require!(
-            ctx.accounts.owner_refund.key() == tl.owner,
-            TimelockError::OwnerMismatch
-        );
+        let amount = timelock_account.amount;
+        timelock_account.is_withdrawn = true;
 
-        let seeds: &[&[u8]] = &[
+        // Create PDA signer seeds
+        let seeds = &[
             b"timelock",
-            tl.owner.as_ref(),
-            tl.recipient.as_ref(),
-            &tl.unlock_ts.to_le_bytes(),
-            &[tl.bump],
+            timelock_account.creator.as_ref(),
+            &timelock_account.unlock_timestamp.to_le_bytes(),
+            &[timelock_account.bump],
         ];
+        let signer = &[&seeds[..]];
 
-        // Transfer tokens from vault → caller's ATA
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                TokenTransfer {
-                    from: ctx.accounts.vault.to_account_info(),
-                    to: ctx.accounts.caller_ata.to_account_info(),
-                    authority: ctx.accounts.timelock.to_account_info(),
-                },
-                &[seeds],
-            ),
-            tl.amount,
-        )?;
+        // Transfer tokens from PDA token account to recipient
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.timelock_token_account.to_account_info(),
+            to: ctx.accounts.recipient_token_account.to_account_info(),
+            authority: timelock_account_info.clone(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        token::transfer(cpi_ctx, amount)?;
 
-        // Close the vault token account; rent goes back to owner_refund
-        token::close_account(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                CloseAccount {
-                    account: ctx.accounts.vault.to_account_info(),
-                    destination: ctx.accounts.owner_refund.to_account_info(),
-                    authority: ctx.accounts.timelock.to_account_info(),
-                },
-                &[seeds],
-            ),
-        )?;
+        emit!(FundsWithdrawn {
+            timelock_account: timelock_account_info.key(),
+            recipient: ctx.accounts.recipient.key(),
+            amount,
+        });
 
+        msg!("Withdrawn {} tokens to recipient", amount);
         Ok(())
+    }
+
+    /// Get timelock information (read-only)
+    pub fn get_timelock_info(ctx: Context<GetTimelockInfo>) -> Result<TimelockInfo> {
+        let timelock_account = &ctx.accounts.timelock_account;
+        let clock = Clock::get()?;
+
+        Ok(TimelockInfo {
+            creator: timelock_account.creator,
+            recipient: timelock_account.recipient,
+            amount: timelock_account.amount,
+            unlock_timestamp: timelock_account.unlock_timestamp,
+            created_at: timelock_account.created_at,
+            is_withdrawn: timelock_account.is_withdrawn,
+            is_unlocked: clock.unix_timestamp >= timelock_account.unlock_timestamp,
+            time_remaining: if clock.unix_timestamp < timelock_account.unlock_timestamp {
+                timelock_account.unlock_timestamp - clock.unix_timestamp
+            } else {
+                0
+            },
+            token_mint: timelock_account.token_mint,
+        })
     }
 }
 
+// Account Structures
 #[derive(Accounts)]
-#[instruction(amount: u64, unlock_ts: i64)]
+#[instruction(amount: u64, unlock_timestamp: i64)]
 pub struct InitializeLock<'info> {
     #[account(mut)]
-    pub initializer: Signer<'info>,
-
-    /// Any pubkey can be a recipient
-    /// CHECK: recipient is only stored; checked on withdraw
-    pub recipient: UncheckedAccount<'info>,
+    pub creator: Signer<'info>,
 
     #[account(
         init,
-        payer = initializer,
-        space = 8 + TimeLock::SIZE,
-        seeds = [
-            b"timelock",
-            initializer.key().as_ref(),
-            recipient.key().as_ref(),
-            &unlock_ts.to_le_bytes()
-        ],
+        payer = creator,
+        space = 8 + TimelockAccount::INIT_SPACE,
+        seeds = [b"timelock", creator.key().as_ref(), &unlock_timestamp.to_le_bytes()],
         bump
     )]
-    pub timelock: Account<'info, TimeLock>,
+    pub timelock_account: Account<'info, TimelockAccount>,
 
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-#[instruction(amount: u64, unlock_ts: i64)]
-pub struct InitializeLockSpl<'info> {
+#[instruction(amount: u64, unlock_timestamp: i64)]
+pub struct InitializeTokenLock<'info> {
     #[account(mut)]
-    pub initializer: Signer<'info>,
-
-    /// CHECK: stored only
-    pub recipient: UncheckedAccount<'info>,
-
-    pub mint: Account<'info, Mint>,
+    pub creator: Signer<'info>,
 
     #[account(
         init,
-        payer = initializer,
-        space = 8 + TimeLock::SIZE,
-        seeds = [
-            b"timelock",
-            initializer.key().as_ref(),
-            recipient.key().as_ref(),
-            &unlock_ts.to_le_bytes()
-        ],
+        payer = creator,
+        space = 8 + TimelockAccount::INIT_SPACE,
+        seeds = [b"timelock", creator.key().as_ref(), &unlock_timestamp.to_le_bytes()],
         bump
     )]
-    pub timelock: Account<'info, TimeLock>,
+    pub timelock_account: Account<'info, TimelockAccount>,
 
-    #[account(
-        init,
-        payer = initializer,
-        associated_token::mint = mint,
-        associated_token::authority = timelock
-    )]
-    pub vault: Account<'info, TokenAccount>,
+    pub token_mint: Account<'info, Mint>,
 
     #[account(
         mut,
-        associated_token::mint = mint,
-        associated_token::authority = initializer
+        constraint = creator_token_account.owner == creator.key(),
+        constraint = creator_token_account.mint == token_mint.key()
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub creator_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = creator,
+        token::mint = token_mint,
+        token::authority = timelock_account,
+        seeds = [b"token_account", timelock_account.key().as_ref()],
+        bump
+    )]
+    pub timelock_token_account: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     #[account(mut)]
-    pub caller: Signer<'info>,
+    pub recipient: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [
-            b"timelock",
-            timelock.owner.as_ref(),
-            timelock.recipient.as_ref(),
-            &timelock.unlock_ts.to_le_bytes()
-        ],
-        bump = timelock.bump
-        // NOTE: no `close = ...` here; we manually move lamports above.
+        seeds = [b"timelock", timelock_account.creator.as_ref(), &timelock_account.unlock_timestamp.to_le_bytes()],
+        bump = timelock_account.bump
     )]
-    pub timelock: Account<'info, TimeLock>,
-
-    /// CHECK: must equal timelock.owner (asserted in handler)
-    #[account(mut)]
-    pub owner_refund: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
+    pub timelock_account: Account<'info, TimelockAccount>,
 }
 
 #[derive(Accounts)]
-pub struct WithdrawSpl<'info> {
+pub struct WithdrawToken<'info> {
     #[account(mut)]
-    pub caller: Signer<'info>,
+    pub recipient: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [
-            b"timelock",
-            timelock.owner.as_ref(),
-            timelock.recipient.as_ref(),
-            &timelock.unlock_ts.to_le_bytes()
-        ],
-        bump = timelock.bump
-        // NOTE: no `close = ...` for the program account
+        seeds = [b"timelock", timelock_account.creator.as_ref(), &timelock_account.unlock_timestamp.to_le_bytes()],
+        bump = timelock_account.bump
     )]
-    pub timelock: Account<'info, TimeLock>,
-
-    /// CHECK: must equal timelock.owner (asserted in handler)
-    #[account(mut)]
-    pub owner_refund: UncheckedAccount<'info>,
-
-    pub mint: Account<'info, Mint>,
+    pub timelock_account: Account<'info, TimelockAccount>,
 
     #[account(
         mut,
-        associated_token::mint = mint,
-        associated_token::authority = timelock
+        seeds = [b"token_account", timelock_account.key().as_ref()],
+        bump
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub timelock_token_account: Account<'info, TokenAccount>,
 
     #[account(
-        init_if_needed,
-        payer = caller,
-        associated_token::mint = mint,
-        associated_token::authority = caller
+        mut,
+        constraint = recipient_token_account.owner == recipient.key(),
+        constraint = recipient_token_account.mint == timelock_account.token_mint.unwrap()
     )]
-    pub caller_ata: Account<'info, TokenAccount>,
+    pub recipient_token_account: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct GetTimelockInfo<'info> {
+    pub timelock_account: Account<'info, TimelockAccount>,
+}
+
+// Data Structures
 #[account]
-#[derive(Default)]
-pub struct TimeLock {
-    pub owner: Pubkey,
+#[derive(InitSpace)]
+pub struct TimelockAccount {
+    pub creator: Pubkey,
     pub recipient: Pubkey,
-    /// `mint = Pubkey::default()` ⇒ SOL; otherwise SPL mint
-    pub mint: Pubkey,
     pub amount: u64,
-    pub unlock_ts: i64,
+    pub unlock_timestamp: i64,
+    pub created_at: i64,
+    pub is_withdrawn: bool,
     pub bump: u8,
+    pub token_mint: Option<Pubkey>,
 }
 
-impl TimeLock {
-    // 32*3 + 8 + 8 + 1 = 121
-    pub const SIZE: usize = 32 + 32 + 32 + 8 + 8 + 1;
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct TimelockInfo {
+    pub creator: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub unlock_timestamp: i64,
+    pub created_at: i64,
+    pub is_withdrawn: bool,
+    pub is_unlocked: bool,
+    pub time_remaining: i64,
+    pub token_mint: Option<Pubkey>,
 }
 
+// Events
+#[event]
+pub struct TimelockCreated {
+    pub timelock_account: Pubkey,
+    pub creator: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub unlock_timestamp: i64,
+    pub token_mint: Option<Pubkey>,
+}
+
+#[event]
+pub struct FundsWithdrawn {
+    pub timelock_account: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+}
+
+// Error Types
 #[error_code]
 pub enum TimelockError {
-    #[msg("Amount must be > 0")]
+    #[msg("Unlock time must be in the future")]
+    InvalidUnlockTime,
+
+    #[msg("Amount must be greater than 0")]
     InvalidAmount,
-    #[msg("Unlock timestamp must be in the future")]
-    UnlockInPast,
-    #[msg("Current time is before unlock time")]
-    TooEarly,
-    #[msg("Caller is not authorized")]
-    Unauthorized,
-    #[msg("Mint mismatch or unsupported for this operation")]
-    WrongMint,
-    #[msg("Owner account provided does not match stored owner")]
-    OwnerMismatch,
+
+    #[msg("Minimum amount is 0.001 SOL (1,000,000 lamports)")]
+    MinimumAmount,
+
+    #[msg("Funds are still locked")]
+    StillLocked,
+
+    #[msg("Funds have already been withdrawn")]
+    AlreadyWithdrawn,
+
+    #[msg("Only the designated recipient can withdraw")]
+    UnauthorizedRecipient,
+
+    #[msg("This is a token account, use withdraw_token instruction")]
+    UseTokenWithdraw,
+
+    #[msg("This is not a token timelock account")]
+    NotTokenAccount,
+
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
 }
