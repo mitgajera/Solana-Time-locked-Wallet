@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Token, Transfer};
 
-declare_id!("2TShpwBZndqh55rQZovy7FrFVGdB2WKjG9PL4byn6WdY");
+declare_id!("81YhjpVcTKih7aR8ruyHW9m5cmD6SskiJtwGj4sGFGgy");
 
 #[program]
 pub mod timelock_wallet {
@@ -17,10 +17,7 @@ pub mod timelock_wallet {
         let clock = Clock::get()?;
 
         // Validation
-        require!(
-            unlock_timestamp > clock.unix_timestamp,
-            TimelockError::InvalidUnlockTime
-        );
+        require!(unlock_timestamp > clock.unix_timestamp, TimelockError::InvalidUnlockTime);
         require!(amount > 0, TimelockError::InvalidAmount);
         require!(amount >= 1_000_000, TimelockError::MinimumAmount);
 
@@ -59,11 +56,7 @@ pub mod timelock_wallet {
             token_mint: None,
         });
 
-        msg!(
-            "SOL timelock created: {} lamports, unlocks at {}",
-            amount,
-            unlock_timestamp
-        );
+        msg!("SOL timelock created: {} lamports, unlocks at {}", amount, unlock_timestamp);
         Ok(())
     }
 
@@ -77,10 +70,7 @@ pub mod timelock_wallet {
         let clock = Clock::get()?;
 
         // Validation
-        require!(
-            unlock_timestamp > clock.unix_timestamp,
-            TimelockError::InvalidUnlockTime
-        );
+        require!(unlock_timestamp > clock.unix_timestamp, TimelockError::InvalidUnlockTime);
         require!(amount > 0, TimelockError::InvalidAmount);
 
         // Store values before mutable borrow
@@ -119,11 +109,7 @@ pub mod timelock_wallet {
             token_mint: Some(token_mint_key),
         });
 
-        msg!(
-            "Token timelock created: {} tokens, unlocks at {}",
-            amount,
-            unlock_timestamp
-        );
+        msg!("Token timelock created: {} tokens, unlocks at {}", amount, unlock_timestamp);
         Ok(())
     }
 
@@ -133,42 +119,24 @@ pub mod timelock_wallet {
         let clock = Clock::get()?;
 
         // Validation
-        require!(
-            !timelock_account.is_withdrawn,
-            TimelockError::AlreadyWithdrawn
-        );
-        require!(
-            clock.unix_timestamp >= timelock_account.unlock_timestamp,
-            TimelockError::StillLocked
-        );
+        require!(!timelock_account.is_withdrawn, TimelockError::AlreadyWithdrawn);
+        require!(clock.unix_timestamp >= timelock_account.unlock_timestamp, TimelockError::StillLocked);
         require!(
             ctx.accounts.recipient.key() == timelock_account.recipient,
             TimelockError::UnauthorizedRecipient
         );
-        require!(
-            timelock_account.token_mint.is_none(),
-            TimelockError::UseTokenWithdraw
-        );
+        require!(timelock_account.token_mint.is_none(), TimelockError::UseTokenWithdraw);
 
         let amount = timelock_account.amount;
         timelock_account.is_withdrawn = true;
 
         // Keep minimum rent for account to remain valid
-        let rent_exempt_minimum =
-            Rent::get()?.minimum_balance(timelock_account.to_account_info().data_len());
+        let rent_exempt_minimum = Rent::get()?.minimum_balance(timelock_account.to_account_info().data_len());
         let transfer_amount = amount.saturating_sub(rent_exempt_minimum);
 
         if transfer_amount > 0 {
-            **ctx
-                .accounts
-                .timelock_account
-                .to_account_info()
-                .try_borrow_mut_lamports()? -= transfer_amount;
-            **ctx
-                .accounts
-                .recipient
-                .to_account_info()
-                .try_borrow_mut_lamports()? += transfer_amount;
+            **ctx.accounts.timelock_account.to_account_info().try_borrow_mut_lamports()? -= transfer_amount;
+            **ctx.accounts.recipient.to_account_info().try_borrow_mut_lamports()? += transfer_amount;
         }
 
         emit!(FundsWithdrawn {
@@ -187,26 +155,17 @@ pub mod timelock_wallet {
 
         // Get account info before mutable borrow
         let timelock_account_info = ctx.accounts.timelock_account.to_account_info();
-
+        
         let timelock_account = &mut ctx.accounts.timelock_account;
 
         // Validation
-        require!(
-            !timelock_account.is_withdrawn,
-            TimelockError::AlreadyWithdrawn
-        );
-        require!(
-            clock.unix_timestamp >= timelock_account.unlock_timestamp,
-            TimelockError::StillLocked
-        );
+        require!(!timelock_account.is_withdrawn, TimelockError::AlreadyWithdrawn);
+        require!(clock.unix_timestamp >= timelock_account.unlock_timestamp, TimelockError::StillLocked);
         require!(
             ctx.accounts.recipient.key() == timelock_account.recipient,
             TimelockError::UnauthorizedRecipient
         );
-        require!(
-            timelock_account.token_mint.is_some(),
-            TimelockError::NotTokenAccount
-        );
+        require!(timelock_account.token_mint.is_some(), TimelockError::NotTokenAccount);
 
         let amount = timelock_account.amount;
         timelock_account.is_withdrawn = true;
@@ -244,7 +203,7 @@ pub mod timelock_wallet {
     pub fn get_timelock_info(ctx: Context<GetTimelockInfo>) -> Result<TimelockInfo> {
         let timelock_account = &ctx.accounts.timelock_account;
         let clock = Clock::get()?;
-
+        
         Ok(TimelockInfo {
             creator: timelock_account.creator,
             recipient: timelock_account.recipient,
@@ -255,9 +214,7 @@ pub mod timelock_wallet {
             is_unlocked: clock.unix_timestamp >= timelock_account.unlock_timestamp,
             time_remaining: if clock.unix_timestamp < timelock_account.unlock_timestamp {
                 timelock_account.unlock_timestamp - clock.unix_timestamp
-            } else {
-                0
-            },
+            } else { 0 },
             token_mint: timelock_account.token_mint,
         })
     }
@@ -269,7 +226,7 @@ pub mod timelock_wallet {
 pub struct InitializeLock<'info> {
     #[account(mut)]
     pub creator: Signer<'info>,
-
+    
     #[account(
         init,
         payer = creator,
@@ -278,7 +235,7 @@ pub struct InitializeLock<'info> {
         bump
     )]
     pub timelock_account: Account<'info, TimelockAccount>,
-
+    
     pub system_program: Program<'info, System>,
 }
 
@@ -287,35 +244,27 @@ pub struct InitializeLock<'info> {
 pub struct InitializeTokenLock<'info> {
     #[account(mut)]
     pub creator: Signer<'info>,
-
+    
     #[account(
         init,
         payer = creator,
         space = 8 + TimelockAccount::INIT_SPACE,
-        seeds = [b"timelock", creator.key().as_ref(), &unlock_timestamp.to_le_bytes()],
+        seeds = [b"timelock", creator.key().as_ref()],
         bump
     )]
     pub timelock_account: Account<'info, TimelockAccount>,
-
-    pub token_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        constraint = creator_token_account.owner == creator.key(),
-        constraint = creator_token_account.mint == token_mint.key()
-    )]
-    pub creator_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        init,
-        payer = creator,
-        token::mint = token_mint,
-        token::authority = timelock_account,
-        seeds = [b"token_account", timelock_account.key().as_ref()],
-        bump
-    )]
-    pub timelock_token_account: Account<'info, TokenAccount>,
-
+    
+    /// CHECK: Token mint account from SPL, validated by token program
+    pub token_mint: UncheckedAccount<'info>,
+    
+    /// CHECK: Creator token account, validated by token program
+    #[account(mut)]
+    pub creator_token_account: UncheckedAccount<'info>,
+    
+    /// CHECK: Timelock token account, validated by token program
+    #[account(mut)]
+    pub timelock_token_account: UncheckedAccount<'info>,
+    
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
@@ -325,7 +274,7 @@ pub struct InitializeTokenLock<'info> {
 pub struct Withdraw<'info> {
     #[account(mut)]
     pub recipient: Signer<'info>,
-
+    
     #[account(
         mut,
         seeds = [b"timelock", timelock_account.creator.as_ref(), &timelock_account.unlock_timestamp.to_le_bytes()],
@@ -338,28 +287,18 @@ pub struct Withdraw<'info> {
 pub struct WithdrawToken<'info> {
     #[account(mut)]
     pub recipient: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"timelock", timelock_account.creator.as_ref(), &timelock_account.unlock_timestamp.to_le_bytes()],
-        bump = timelock_account.bump
-    )]
+    
+    #[account(mut)]
     pub timelock_account: Account<'info, TimelockAccount>,
-
-    #[account(
-        mut,
-        seeds = [b"token_account", timelock_account.key().as_ref()],
-        bump
-    )]
-    pub timelock_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = recipient_token_account.owner == recipient.key(),
-        constraint = recipient_token_account.mint == timelock_account.token_mint.unwrap()
-    )]
-    pub recipient_token_account: Account<'info, TokenAccount>,
-
+    
+    /// CHECK: Token account, validated by token program
+    #[account(mut)]
+    pub timelock_token_account: UncheckedAccount<'info>,
+    
+    /// CHECK: Recipient token account, validated by token program
+    #[account(mut)]
+    pub recipient_token_account: UncheckedAccount<'info>,
+    
     pub token_program: Program<'info, Token>,
 }
 
@@ -418,28 +357,28 @@ pub struct FundsWithdrawn {
 pub enum TimelockError {
     #[msg("Unlock time must be in the future")]
     InvalidUnlockTime,
-
+    
     #[msg("Amount must be greater than 0")]
     InvalidAmount,
-
+    
     #[msg("Minimum amount is 0.001 SOL (1,000,000 lamports)")]
     MinimumAmount,
-
+    
     #[msg("Funds are still locked")]
     StillLocked,
-
+    
     #[msg("Funds have already been withdrawn")]
     AlreadyWithdrawn,
-
+    
     #[msg("Only the designated recipient can withdraw")]
     UnauthorizedRecipient,
-
+    
     #[msg("This is a token account, use withdraw_token instruction")]
     UseTokenWithdraw,
-
+    
     #[msg("This is not a token timelock account")]
     NotTokenAccount,
-
+    
     #[msg("Invalid token account")]
     InvalidTokenAccount,
 }
